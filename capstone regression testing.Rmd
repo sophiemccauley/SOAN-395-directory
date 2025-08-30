@@ -1,0 +1,192 @@
+---
+title: "Capstone regression testing"
+author: "Sophie McCauley"
+date: "2025-04-04"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r loading the income, lane and density csv files}
+paris1421_cyclingaccess <- readRDS("~/OneDrive - Washington and Lee University/winter term '25/SOAN 395/paris1421_cyclingaccess_dist.RDS")
+cycling_density <- readRDS("~/OneDrive - Washington and Lee University/winter term '25/SOAN 395/cycling_density_dist.RDS")
+mhhi14 <- read.csv("rstudio-export 2/MHHI_2014.csv")
+mhhi21 <- read.csv("rstudio-export 2/MHHI_2021.csv")
+
+```
+
+```{r creating pivot tables for eventual join}
+for_pivot14 <- mhhi14 %>% select(IRIS, DEC_MED14) %>% rename(MHHI = DEC_MED14, iris_id = IRIS)
+for_pivot14$year <- 2014
+
+for_pivot21 <- mhhi21 %>% select(IRIS, DEC_MED21) %>% rename(MHHI = DEC_MED21, iris_id = IRIS) %>% filter(MHHI != "ns" & MHHI != "nd" )
+for_pivot21$year <- 2021
+
+#going to make a column for income, scaled by 1000 euros 
+for_pivot21$MHHI <- as.numeric(for_pivot21$MHHI)
+
+for_pivot14<- for_pivot14 %>% mutate(mhhi_k = MHHI/1000)
+for_pivot21<- for_pivot21 %>% mutate(mhhi_k = MHHI/1000)
+```
+
+```{r creating the qpv dummy variable }
+#qpvs are based on 60% of the national median income per consumption unit however because this is.a proxy and given that i have specific France mhhi data, i will construct the dummy from this. 
+
+mean(for_pivot14$MHHI, na.rm = TRUE)
+median(for_pivot14$MHHI, na.rm = TRUE)
+# not a massive difference between the two, but for the sake of clarity and keeping things in line with the actual median income measurement, i will use median again
+
+qpv_threshold14 <- (median(for_pivot14$MHHI, na.rm = TRUE))*.6
+for_pivot14 <- for_pivot14 %>% mutate(qpv_dummy = case_when(MHHI <= 18074.4 ~ 1,
+                                                            MHHI > 18074.4 ~0))
+
+mean(for_pivot21$MHHI, na.rm = TRUE)
+median(for_pivot21$MHHI, na.rm = TRUE)
+
+qpv_threshold21 <- (median(for_pivot21$MHHI, na.rm = TRUE))*.6
+for_pivot21 <- for_pivot21 %>% mutate(qpv_dummy = case_when(MHHI <= 20760 ~ 1,
+                                                            MHHI > 20760 ~0))
+```
+```{r mhhi and cycling access and density joins}
+
+MHHI_joined <- rbind(for_pivot14, for_pivot21)
+
+#creating the cycling access data frame
+MHHI_joined_ca <- MHHI_joined %>% left_join(paris1421_cyclingaccess)
+
+#creating the cycling density data frame 
+MHHI_joined_cd <- MHHI_joined %>% left_join(cycling_density)
+#density scaled variable is created to account for scaling issues within the original density variable
+MHHI_joined_cd$density_scaled <- as.numeric(scale(MHHI_joined_cd$cycling_density_km_per_km2))
+
+```
+
+```{r cycling access and MHHI models}
+MHHI_joined_ca$year <- as.factor(MHHI_joined_ca$year)
+colnames(MHHI_joined_ca)[colnames(MHHI_joined_ca) == "distance_tocenter"] <- "distance_fromcenter"
+#cycling access models using median income
+model1_camhhi <- lm(dist_to_bike ~ distance_fromcenter, data = MHHI_joined_ca)
+model2_camhhi <- lm(dist_to_bike ~ distance_fromcenter + year , data = MHHI_joined_ca)
+model3_camhhi <- lm(dist_to_bike ~ distance_fromcenter + year + MHHI, data = MHHI_joined_ca)
+model4_camhhi <- lm(dist_to_bike ~ distance_fromcenter + year + MHHI + year*MHHI, data = MHHI_joined_ca)
+
+
+library(modelsummary)
+models_camhhi <- list(model1_camhhi, model2_camhhi, model3_camhhi, model4_camhhi)
+modelsummary(models_camhhi, stars = T)
+
+
+library(interactions)
+interact_plot(model4_camhhi, pred = MHHI, modx = year)
+
+```
+
+```{r cycling access and MHHI_k models}
+#the below models have mhhi divided by 1000
+model1_camhhi_k <- lm(dist_to_bike ~ distance_fromcenter, data = MHHI_joined_ca)
+model2_camhhi_k <- lm(dist_to_bike ~ distance_fromcenter + year, data = MHHI_joined_ca)
+model3_camhhi_k <- lm(dist_to_bike ~ distance_fromcenter + year + mhhi_k, data = MHHI_joined_ca)
+model4_camhhi_k <- lm(dist_to_bike ~ distance_fromcenter + year + mhhi_k + mhhi_k*year, data = MHHI_joined_ca)
+
+library(modelsummary)
+models_camhhi_k <- list(model1_camhhi_k, model2_camhhi_k, model3_camhhi_k, model4_camhhi_k)
+modelsummary(models_camhhi_k, stars = T)
+
+library(interactions)
+interact_plot(model4_camhhi_k, pred = mhhi_k, modx = year, x.label = "Median Income, in thousands (€)", y.label = "Distance to nearest bike path (m)", main.title = "Median Income (€) and Year Interaction, Modeled" )
+
+#using the stargazer modeling system 
+stargazer(model1_camhhi_k, model2_camhhi_k, model3_camhhi_k, model4_camhhi_k, type = 'text', title = "Bike Lane Access Regression Results",dep.var.labels = "Distance to Nearest Bike Path (m)", covariate.labels = c("Distance from City Center", "2021", "Median Income, in thousands (€)", "2021 x Median Income"), out = "models_camhhi_knew1.html" ) 
+
+#if there's more time, include all the years -- what happens after 2021? 
+```
+
+
+```{r cycling access and QPV models}
+model4_caqpv<- lm(dist_to_bike ~ distance_fromcenter + year + qpv_dummy, data = MHHI_joined_ca)
+model5_caqpv <- lm(dist_to_bike ~ distance_fromcenter + year + qpv_dummy + year*qpv_dummy, data = MHHI_joined_ca)
+
+library(modelsummary)
+models_caqpv <- list(model4_caqpv, model5_caqpv)
+modelsummary(models_caqpv, stars = T)
+
+#using the stargazer modeling system 
+stargazer(model4_caqpv, model5_caqpv, type = 'text', title = "Bike Lane Access Regression Results",dep.var.labels = "Distance to Nearest Bike Path (m)", covariate.labels = c("Distance from City Center", "2021", "QPV Dummy", "2021 x QPV Dummy"), out = "models_caqpv.html" ) 
+
+library(interactions)
+interact_plot(model5_caqpv, pred = qpv_dummy, modx = year, x.label = "QPV dummy", y.label =  "Distance to nearest bike path (m)", main.title = "Year and QPV Dummy Interaction, Modeled")
+```
+
+```{r cycling density models with mhhi_k}
+MHHI_joined_cd$year <- as.factor(MHHI_joined_cd$year)
+colnames(MHHI_joined_cd)[colnames(MHHI_joined_cd) == "distance_tocenter"] <- "distance_fromcenter"
+
+model1_cdmhhi_k <- lm(density_scaled ~ distance_fromcenter, data = MHHI_joined_cd)
+model2_cdmhhi_k <- lm(density_scaled ~ distance_fromcenter + year, data = MHHI_joined_cd)
+model3_cdmhhi_k <- lm(density_scaled ~ distance_fromcenter + year + mhhi_k , data = MHHI_joined_cd)
+model4_cdmhhi_k <- lm(density_scaled ~ distance_fromcenter + year + mhhi_k + year*mhhi_k, data = MHHI_joined_cd)
+
+library(modelsummary)
+models_cdmhhi_k <- list(model1_cdmhhi_k, model2_cdmhhi_k, model3_cdmhhi_k, model4_cdmhhi_k)
+modelsummary(models_cdmhhi_k, stars = T)
+
+#using the stargazer modeling system 
+stargazer(model1_cdmhhi_k, model2_cdmhhi_k, model3_cdmhhi_k,model4_cdmhhi_k, type = 'text', title = "Bike Lane Density Regression Results", dep.var.labels = "Density of Cycling Lanes in IRIS-level Districts, scaled by Standard Deviation", covariate.labels = c("Distance from City Center", "2021", "Median Income, in thousands (€)", "2021 x Median Income"), out = "models_cdmhhi_k.html")
+
+
+
+
+library(interactions)
+interact_plot(model4_cdmhhi_k, pred = mhhi_k, modx = year, x.label = "Median Income, in thousands (€)", y.label =  "Cycling Lane Density (in SD)", main.title = "Year and Median Income (in thousands (€)) Interaction, Modeled")
+
+```
+
+```{r}
+model4_cdqpv <- lm(density_scaled ~  distance_fromcenter + year + qpv_dummy, data = MHHI_joined_cd)
+model5_cdqpv <- lm(density_scaled ~ distance_fromcenter + year + qpv_dummy + year*qpv_dummy, data = MHHI_joined_cd)
+
+library(modelsummary)
+models_cdqpv <- list(model4_cdqpv, model5_cdqpv)
+modelsummary(models_cdqpv, stars = T)
+
+stargazer(model4_cdqpv, model5_cdqpv, type = 'text', title = "Bike Lane Density Regression Results",dep.var.labels = "Density of Cycling Lanes in IRIS-level Districts, scaled by Standard Deviation", covariate.labels = c("Distance from City Center", "2021", "QPV Dummy", "2021 x QPV Dummy"), out = "models_cdqpv.html" ) 
+
+library(interactions)
+interact_plot(model5_cdqpv, pred = qpv_dummy, modx = year, x.label = "QPV dummy", y.label =  "Cycling Lane Density (in SD)", main.title = "Year and QPV Dummy Interaction, Modeled")
+```
+
+```{r}
+calculate <- MHHI_joined_cd %>% group_by(year) %>% summarise(total_length = sum(cycling_length_km))
+```
+
+#sum the cycling length in km 2021 - sum(cycling length in km fo 2014) --> change in estimated cycling length
+#standardize the variable - for ech value, subtract the mean of that thing and devidie by thestandard deviation of that thing 
+# apply to the density variable 
+# keep the distance variable the same
+# we think that the units are wrong but systematically done so 
+# with SD, this hepls with interpreation because its SD from the mean and with interaction terms 
+
+```{r}
+MHHI_joined_cd$year <- as.factor(MHHI_joined_cd$year)
+finaljoin_cacd <- left_join(MHHI_joined_ca, MHHI_joined_cd)
+```
+```{r}
+
+summary_paris <- finaljoin_cacd %>% select(MHHI, mhhi_k, dist_to_bike, distance_fromcenter, density_scaled)
+vtable::sumtable(summary_paris)
+
+```
+
+```{r}
+summary_paris <- na.omit(summary_paris)
+mhhi_plot <- ggplot(summary_paris, aes(x = MHHI)) + geom_histogram(bins = 100) + labs(title = "Distribution of Median Income (€)", x = "Median Income (€)" )
+mhhi_plot
+disttobike_plot <- ggplot(summary_paris, aes(x = dist_to_bike)) + geom_histogram(bins = 100) + labs(title = "Distribution of Distance to the Nearest Bike Path (m)", x = "Distance to the nearest bike path (m)")
+disttobike_plot
+distancefromcenter_plot <- ggplot(summary_paris, aes(x = distance_fromcenter)) + geom_histogram(bins = 100) + labs(title = "Distribution of Distance from Paris City Center (km)", x = "Distance from the city center (km)")
+distancefromcenter_plot
+densityscaled_plot <- ggplot(summary_paris, aes(x = density_scaled)) + geom_histogram(bins = 100) + labs(title = "Distribution of Bike Lane Density, in Standard Deviations", x = "Bike lane density (SD)")
+densityscaled_plot
+```
